@@ -198,7 +198,7 @@ seamstress.onPageMount(function(newNode, oldNode, options) {
 
 seamstress provides the ability to listen for a variety of events.
 
-During a navigation, they are dispatched in the order listed here.
+During a navigation, they are dispatched in the order they are listed in this reference.
 
 #### `beforeNavigate`
 Called before a navigation event occurs. Handlers can cancel the navigation or ask for browser navigation instead.
@@ -211,10 +211,10 @@ seamstress.events.beforeNavigate.add(function(options)) {
   // if this navigation occured because of a history event (i.e., user clicked back button)
   //   then options.automatic === "history"
   // in either case, the event that caused this is available at options.event.
-  
+
   // additionally, options itself is mutable and changes will affect this navigation,
   // but will not affect future navigations.
-  
+
   // return false to cancel navigation.
   // return seamstress.RELOAD to force a full browser reload.
 })
@@ -228,7 +228,7 @@ seamstress.events.afterMount.add(function(newNode, oldNode, options)) {
   ...
 }
 ```
-  
+
 #### `beforeUnmount`
 Called before the old page's node is removed from the document.
 
@@ -275,16 +275,48 @@ You can pass asynchronous handlers for any of these events, and the navigation w
 
 Async listeners are dispatched in parallel, except for `beforeNavigate`, where listeners are run sequentially in the order listed above. In this case, when any listener returns `false` or `seamstress.RELOAD`, no further listeners are run.
 
+### Changing options
+
+Configuration options are copied from seamstress's global config at the beginning of a
+navigation, so calls to `seamstress.setConfig` will not affect the current navigation.
+To change options for the current navigation, mutate the `options` object passed to each
+event handler. These changes will be persisted throughout the navigation and used
+by seamstress as needed.
+
+Note: seamstress automatically adds `options.url` to be the URL to which navigation
+was requested. Modifying this property will change the URL that is used to fetch
+the resource, but the original URL will be stored by seamstress's as the current page,
+and will be shown in the user's address bar. (This behavior is subject to—and almost
+certain to—change.)
+
+### Distinguishing navigation events
+
+You can determine which navigation an event belongs by looking at the `navigationEventToken`
+property of the `options` parameter passed to event handlers.
+
 ## Error handling
 
-Use the `onError` event to catch errors that occur during navigation.
+By default, if an error is thrown by one any event handler, or raised by any other
+part of the loading process (such as a failed network request, or missing target
+on the old or new page), seamstress will fallback to letting the browser navigate
+to the desired page. To disable this globally, use:
 
 ```js
-seamstress.events.onError.add(function(err)) {
+seamstress.setConfig({ reloadOnError: false })
+```
+
+For more control and greater visibility into errors, you can register an event
+handler for errors.
+
+```js
+seamstress.events.onError.add(function(err, options)) {
   // something horrible happened
 }
 ```
 
-Improving error handling is ongoing... :)
+`addPage` is not currently supported for `onError`. This will probably change.
 
-
+Regardless of the `reloadOnError` setting, you can request specific behavior
+from this event handler by calling `err.preventReload()` or `err.requestReload()`.
+All event handlers will be run before the page is reloaded, so later event handlers
+may override the selected behavior.

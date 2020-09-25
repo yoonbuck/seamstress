@@ -9,6 +9,8 @@ window.seamstress =
       hiddenClass: "seamstress__hidden",
       handleLinks: true,
       handleHistory: true,
+      pushState: true,
+      reloadOnError: true,
     };
 
     const setProp = (obj, prop, value, writable = false) =>
@@ -93,66 +95,56 @@ window.seamstress =
     let navigationTarget;
     let hasNavigated = false;
 
-    const navigate = async function (url, options) {
+    const navigate = async function (url, options = {}) {
       // skip navigation if it's the page we're already on.
       // might not catch everything if
       let opts = Object.assign({ url }, config, options);
+      const navigationEventToken = Symbol(url);
+      setProp(opts, "navigationEventToken", navigationEventToken);
 
       if (url === currentPage && !config.loadSamePage) return false;
       if (inNavigation && navigationTarget === url) return false;
       if (navigationBlocked) return false;
 
       inNavigation = true;
+      let setBlocked = false;
       navigationTarget = url;
 
-      // run beforeNavigate handlers
-      let result = await beforeNavigateKey.invoke(
-        [opts],
-        evtwrap(opts.beforeNavigate)
-      );
-
-      if (navigationTarget !== url) return; // exit early if possible
-
-      if (result === RELOAD_TOKEN) {
-        // some handler requested hard reload - invoke beforeUnmount
-        await beforeUnmountKey.invokeAll(
-          [null, null, opts],
-          evtwrap(opts.beforeUnmount)
-        );
-        // engage!
-        location.href = url;
-        return; // doesn't really matter
-      } else if (result !== COMPLETED) {
-        // navigation cancelled by some handler
-        inNavigation = false;
-        return false;
-      }
-
-      const $oldNode = document.getElementById(opts.target);
-      if (!$oldNode) {
-        // todo: throw an error instead
-        inNavigation = false;
-        return false; // cannot replace old content
-      }
-
-      if (navigationTarget !== url) {
-        inNavigation = false;
-        return false; // exit early if possible
-      }
-
-      hasNavigated = true;
-      let $newNode, $scripts;
       try {
+        // run beforeNavigate handlers
+        let result = await beforeNavigateKey.invoke(
+          [opts],
+          evtwrap(opts.beforeNavigate)
+        );
+
+        if (navigationTarget !== url) return; // exit early if possible
+
+        if (result === RELOAD_TOKEN) {
+          // some handler requested hard reload - invoke beforeUnmount
+          await beforeUnmountKey.invokeAll(
+            [null, null, opts],
+            evtwrap(opts.beforeUnmount)
+          );
+          // engage!
+          location.href = url;
+          return; // doesn't really matter
+        } else if (result !== COMPLETED) {
+          return false;
+        }
+
+        const $oldNode = document.getElementById(opts.target);
+        if (!$oldNode) {
+          throw new Error("target node not found on current page");
+        }
+        if (navigationTarget !== url) return false; // exit early if possible
+
+        hasNavigated = true;
+        let $newNode, $scripts;
+
         const response = await fetch(opts.url);
-        if (navigationTarget !== url) {
-          inNavigation = false;
-          return;
-        } // exit early if possible
+        if (navigationTarget !== url) return false; // exit early if possible
         const responseText = await response.text();
-        if (navigationTarget !== url) {
-          inNavigation = false;
-          return;
-        } // exit early if possible
+        if (navigationTarget !== url) return false; // exit early if possible
         const $page = new DOMParser().parseFromString(
           responseText,
           "text/html"
@@ -162,87 +154,98 @@ window.seamstress =
           throw new Error("target node not found on destination page");
         }
         $scripts = $page.querySelectorAll("script[data-seamstress-activate]");
-      } catch (e) {
-        if (navigationTarget !== url) {
-          inNavigation = false;
-          return false;
-        }
-        onErrorKey.invokeAll([e]);
-        inNavigation = false;
-        return false;
-      }
 
-      // this navigation is happening!
-      beforeNavigateKey.resetPage();
+        // this navigation is happening!
+        beforeNavigateKey.resetPage();
 
-      // block new navigations during transition
-      navigationBlocked = true;
-      try {
-        // mount new page
-        $newNode.classList.add(opts.hiddenClass);
-        $oldNode.parentNode.insertBefore($newNode, $oldNode.nextSibling);
+        // block new navigations during transition
+        navigationBlocked = true;
+        setBlocked = true;
+        try {
+          // mount new page
+          $newNode.classList.add(opts.hiddenClass);
+          $oldNode.parentNode.insertBefore($newNode, $oldNode.nextSibling);
 
-        if (options.automatic !== "history") {
-          history.pushState({}, "", url);
-        }
+          // don't
+          if (options.automatic !== "history" && !options.pushState) {
+            history.pushState({}, "", url);
+          }
 
-        currentPage = url;
+          currentPage = url;
 
-        // run js on new page
-        for (let $script of $scripts) {
-          let $sc = document.createElement("script");
-          $sc.textContent = $script.textContent;
-          if ($script.src) $sc.src = $script.src; // does this work?
-          document.body.appendChild($sc);
-        }
+          // run js on new page
+          for (let $script of $scripts) {
+            let $sc = document.createElement("script");
+            $sc.textContent = $script.textContent;
+            if ($script.src) $sc.src = $script.src; // does this work?
+            document.body.appendChild($sc);
+          }
 
-        // run afterMount handler
-        await afterMountKey.invokeAll(
-          [$newNode, $oldNode, opts],
-          evtwrap(opts.afterMount)
-        );
-        afterMountKey.resetPage();
+          // run afterMount handler
+          await afterMountKey.invokeAll(
+            [$newNode, $oldNode, opts],
+            evtwrap(opts.afterMount)
+          );
+          afterMountKey.resetPage();
 
-        // run transition
-        $newNode.classList.remove(opts.hiddenClass);
-        if (opts.transition) await opts.transition($newNode, $oldNode);
-        $oldNode.classList.add(opts.hiddenClass);
-
-        // run beforeUnmount handler
-        await beforeUnmountKey.invokeAll(
-          [$newNode, $oldNode, opts],
-          evtwrap(opts.beforeUnmount)
-        );
-        beforeUnmountKey.resetPage();
-
-        // allows a new page to set beforeUnmount handlers asap
-        // using onPageUnmount
-        await afterUnmountKey.invokeAll([opts], []);
-        afterUnmountKey.resetPage();
-
-        $oldNode.parentNode.removeChild($oldNode);
-
-        navigationBlocked = false;
-      } catch (e) {
-        if ($oldNode.parentNode === $newNode.parentNode) {
-          $oldNode.parentNode.removeChild($oldNode);
+          // run transition
           $newNode.classList.remove(opts.hiddenClass);
+          if (opts.transition) await opts.transition($newNode, $oldNode);
+          $oldNode.classList.add(opts.hiddenClass);
+
+          // run beforeUnmount handler
+          await beforeUnmountKey.invokeAll(
+            [$newNode, $oldNode, opts],
+            evtwrap(opts.beforeUnmount)
+          );
+          beforeUnmountKey.resetPage();
+
+          // allows a new page to set beforeUnmount handlers asap
+          // using onPageUnmount
+          await afterUnmountKey.invokeAll([opts], []);
+          afterUnmountKey.resetPage();
+
+          $oldNode.parentNode.removeChild($oldNode);
+
+          navigationBlocked = false;
+          setBlocked = false;
+        } catch (e) {
+          // at least attempt to cleanup before throwing
+          if ($oldNode.parentNode === $newNode.parentNode) {
+            $oldNode.parentNode.removeChild($oldNode);
+            $newNode.classList.remove(opts.hiddenClass);
+          }
+          throw e;
         }
 
-        onErrorKey.invokeAll([e]);
-        inNavigation = false;
-        navigationBlocked = false;
+        await afterNavigateKey.invokeAll(
+          [$newNode, opts],
+          evtwrap(opts.afterNavigate)
+        );
+
+        afterNavigateKey.resetPage();
+
+        return true;
+      } catch (e) {
+        let reload = opts.reloadOnError;
+        e = e || {};
+        e.preventReload = () => {
+          reload = false;
+        };
+        e.requestReload = () => {
+          reload = true;
+        };
+        onErrorKey.invokeAll([e, opts], evtwrap(opts.onError));
+        if (reload) {
+          location.href = opts.url;
+        }
         return false;
+      } finally {
+        if (navigationTarget === url) {
+          inNavigation = false;
+          if (setBlocked) navigationBlocked = false;
+        }
       }
-
-      await afterNavigateKey.invokeAll(
-        [$newNode, opts],
-        evtwrap(opts.afterNavigate)
-      );
-      afterNavigateKey.resetPage();
-
-      inNavigation = false;
-      return true;
     };
 
     document.addEventListener("click", (e) => {
