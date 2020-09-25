@@ -190,7 +190,7 @@ window.seamstress =
 
           // run transition
           $newNode.classList.remove(opts.hiddenClass);
-          if (opts.transition) await opts.transition($newNode, $oldNode);
+          if (opts.transition) await opts.transition($oldNode, $newNode);
           $oldNode.classList.add(opts.hiddenClass);
 
           // run beforeUnmount handler
