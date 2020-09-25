@@ -291,8 +291,12 @@ certain to—change.)
 
 ### Distinguishing navigation events
 
-You can determine which navigation an event belongs by looking at the `navigationEventToken`
-property of the `options` parameter passed to event handlers.
+You can store data on the `options` object as needed, but if this isn't sufficient,
+you can determine which navigation an event belongs by looking at the `navigationEventToken`
+property of the `options` parameter passed to event handlers. This is a unique
+`Symbol` per navigation, and will be the same for all events fired throughout the
+process of a navigation. For example, you might use this as the key of a `WeakMap`
+to store additional properties that you can look up in later event handlers.
 
 ## Error handling
 
